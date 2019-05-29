@@ -2,6 +2,7 @@
 
 import numpy as np
 import pyDOE2
+import emcee
 from george import kernels, GP
 from scipy.optimize import minimize
 
@@ -9,12 +10,12 @@ class ARTsampler(object):
     #This constructor will be removed later
     def __init__(self, mean_guess, covariance_guess, lnprob, lnprob_args,
                  Ntraining_points=40, scale=8, Nwalkers=32, max_iter=2,
-                 quiet=True):
+                 Nburn=100, Nsteps=1000, quiet=True):
         self.iteration = 0 #Haven't done anything yet
-        training_points = self.make_training_points(self.iteration,
-                                                    mean_guess,
-                                                    covariance_guess,
-                                                    Ntraining_points, scale)
+        training_points = self._make_training_points(self.iteration,
+                                                     mean_guess,
+                                                     covariance_guess,
+                                                     Ntraining_points, scale)
         
         self.lnprob = lnprob
         self.lnprob_args = lnprob_args
@@ -24,33 +25,41 @@ class ARTsampler(object):
         self.covariance_guess = [covariance_guess]
         self.training_points = [training_points]
 
-        #Set as None for things that haven't
+        #Initialize lists
         self.stages = []
         self._emcee_samplers = []
         self.chains = []
+
+        #Save other attributes
         self.Ntraining_points = Ntraining_points
         self.scale = scale
         self.Nwalkers = Nwalkers
+        self.Nburn = Nburn
+        self.Nsteps = Nsteps
         self.max_iter = max_iter
+        self.quiet = quiet
 
     def single_iteration(self):
         i = self.iteration
 
+        if not self.quiet:
+            print("Performing iteration {0}".format(i))
+        
         if i > 0:
             chain = self.get_samples()
             mean_guess = np.mean(chain, 0)
             cov_guess = np.cov(chain.T)
-            training_points = self.make_training_points(i, mean_guess,
-                                                        cov_guess,
-                                                        self.Ntraining_points,
-                                                        self.scale)
+            training_points = self._make_training_points(i, mean_guess,
+                                                         cov_guess,
+                                                         self.Ntraining_points,
+                                                         self.scale)
             self.mean_guesses.append(mean_guess)
             self.covariance_guess.append(cov_guess)
             self.training_points.append(training_points)
             
-        if i >= self.max_iter:
-            print("Iteration {0} reached, "+\
-                  "max_iter is {1}.".format(i, self.max_iter))
+        if i > self.max_iter:
+            print("Iteration {0} reached, max_iter is {1}.".format(i, self.max_iter))
+            return False
         mean_guess = self.mean_guesses[i]
         cov_guess = self.covariance_guess[i]
         points = self.training_points[i]
@@ -63,32 +72,35 @@ class ARTsampler(object):
         stage = ARTstage(mean_guess, cov_guess, points, lnlikes, self.quiet)
         
         #Perform MCMC
-        initial = guess_mean
+        initial = mean_guess
         ndim = len(initial)
         nwalkers = self.Nwalkers
         sampler = emcee.EnsembleSampler(nwalkers, ndim, stage.predict)
         if not self.quiet:
             print("Running first burn-in")
-        p0 = initial + 1e-4*np.random.randn(nwalkers, ndim)
-        p0, lp, _ = sampler.run_mcmc(p0, 100)
+        p0 = np.random.multivariate_normal(mean_guess, cov_guess, size=nwalkers)
+        #p0 = initial + 1e-4*np.random.randn(nwalkers, ndim)
+        p0, lp, _ = sampler.run_mcmc(p0, self.Nburn)
         if not self.quiet:
             print("Running second burn-in")
-        p0 = p0[np.argmax(lp)] + 1e-4*np.random.randn(nwalkers, ndim)
-        p0, lp, _ = sampler.run_mcmc(p0, 100)
+        p0 = np.random.multivariate_normal(p0[np.argmax(lp)],
+                                           cov_guess, size=nwalkers)
+        #p0 = p0[np.argmax(lp)] + 1e-4*np.random.randn(nwalkers, ndim)
+        p0, lp, _ = sampler.run_mcmc(p0, self.Nburn)
         sampler.reset()
         if not self.quiet:
             print("Running production...")
-        sampler.run_mcmc(p0, 2000)
+        sampler.run_mcmc(p0, self.Nsteps)
 
         self.stages.append(stage)
         self._emcee_samplers.append(sampler)
         self.chains.append(sampler.flatchain)
         
         self.iteration += 1
-        return
+        return True
 
     def get_samples(self, index=-1):
-        return self._emcee_samples[index]
+        return self.chains[index]
 
     def get_training_points(self, index=-1):
         return self.training_points[index]
@@ -96,11 +108,12 @@ class ARTsampler(object):
     def _make_training_points(self, iteration, mean, cov,
                              Ntraining_points=100, scale=8):
         #Create LH training samples
-        x = pyDOE2.lhs(len(mean), samples=Nsamples,
+        x = pyDOE2.lhs(len(mean), samples=Ntraining_points,
                        criterion="center", iterations=5)
         
         #Transform them correctly
         x -= 0.5 #center the training points
+        x = np.append(x, np.atleast_2d(np.zeros_like(x[0])), axis=0)
         w, RT = np.linalg.eig(cov)
         R = RT.T
         
