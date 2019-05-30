@@ -1,3 +1,7 @@
+# png and pdf files
+*.png
+*.pdf
+
 # emacs backup files
 *~
 
