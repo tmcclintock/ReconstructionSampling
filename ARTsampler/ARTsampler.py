@@ -66,7 +66,7 @@ class ARTsampler(object):
 
         if not self.quiet:
             print("Computing log-probability of training points.")
-        lnlikes = np.array([self.lnprob(p, self.lnprob_args) for p in points])
+        lnlikes = np.array([self.lnprob(p, self.lnprob_args) for p in points]).flatten()
 
         #Make the current stage
         stage = ARTstage(mean_guess, cov_guess, points, lnlikes, self.quiet)
@@ -128,6 +128,7 @@ class ARTstage(object):
         self.lnlikes_true = lnlikes
         self.lnlike_max = np.max(lnlikes)
         self.lnlikes = lnlikes - self.lnlike_max #max is now at 0
+        print(self.lnlikes.shape)
         self.x = self._transform_data(points)
         
         _guess = 4.5 #kernel length guess
