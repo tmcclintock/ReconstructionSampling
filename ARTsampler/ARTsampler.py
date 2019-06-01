@@ -8,24 +8,29 @@ from scipy.optimize import minimize
 
 class ARTsampler(object):
     #This constructor will be removed later
-    def __init__(self, mean_guess, covariance_guess, lnprob, lnprob_args,
+    def __init__(self, prior_volume, lnprob, lnprob_args,
                  Ntraining_points=40, scale=8, Nwalkers=32, max_iter=2,
                  Nburn=100, Nsteps=1000, quiet=True):
+        #Enfore dimensionality
+        prior_volume = np.asarray(prior_volume)
+        priov_volume = np.atleast_2d(prior_volume)
+        assert prior_volume.ndim == 2 #array of min and maxes
+        assert len(prior_volume[0]) == 2 #only a min and a max
+
+        
+        self.prior_volume = prior_volume
         self.iteration = 0 #Haven't done anything yet
-        training_points = self._make_training_points(self.iteration,
-                                                     mean_guess,
-                                                     covariance_guess,
-                                                     Ntraining_points, scale)
+        training_points = self._make_initial_training_points(prior_volume, Ntraining_points)
         
         self.lnprob = lnprob
         self.lnprob_args = lnprob_args
 
         #Set quantities that have been computed so far
-        self.mean_guesses = [mean_guess]
-        self.covariance_guess = [covariance_guess]
         self.training_points = [training_points]
 
         #Initialize lists
+        self.mean_guesses = []
+        self.covariance_guesses = []
         self.stages = []
         self._emcee_samplers = []
         self.chains = []
@@ -54,21 +59,26 @@ class ARTsampler(object):
                                                          self.Ntraining_points,
                                                          self.scale)
             self.mean_guesses.append(mean_guess)
-            self.covariance_guess.append(cov_guess)
+            self.covariance_guesses.append(cov_guess)
             self.training_points.append(training_points)
+        else:
+            self.mean_guesses.append(np.mean(self.training_points[i], 0))
+            self.covariance_guesses.append(np.diag(np.var(self.training_points[i], 0)))
+        
+        mean_guess = self.mean_guesses[i]
+        cov_guess = self.covariance_guesses[i]
+        points = self.training_points[i]
             
         if i > self.max_iter:
             print("Iteration {0} reached, max_iter is {1}.".format(i, self.max_iter))
             return False
-        mean_guess = self.mean_guesses[i]
-        cov_guess = self.covariance_guess[i]
-        points = self.training_points[i]
-
         if not self.quiet:
             print("Computing log-probability of training points.")
         lnlikes = np.array([self.lnprob(p, self.lnprob_args) for p in points]).flatten()
 
         #Make the current stage
+        if not self.quiet:
+            print("Reconstructing the distribution")
         stage = ARTstage(mean_guess, cov_guess, points, lnlikes, self.quiet)
         
         #Perform MCMC
@@ -104,6 +114,17 @@ class ARTsampler(object):
 
     def get_training_points(self, index=-1):
         return self.training_points[index]
+
+    def _make_initial_training_points(self, prior_volume, Ntraining_points=100):
+        ndim = len(prior_volume)
+        x = pyDOE2.lhs(ndim, samples=Ntraining_points,
+                       criterion="center", iterations=5)
+        for i in range(ndim):
+            pvi = prior_volume[i]
+            size = np.max(pvi) - np.min(pvi)
+            x[:, i] *= size
+            x[:, i] += np.min(pvi)
+        return x
     
     def _make_training_points(self, iteration, mean, cov,
                              Ntraining_points=100, scale=8):
@@ -128,7 +149,6 @@ class ARTstage(object):
         self.lnlikes_true = lnlikes
         self.lnlike_max = np.max(lnlikes)
         self.lnlikes = lnlikes - self.lnlike_max #max is now at 0
-        print(self.lnlikes.shape)
         self.x = self._transform_data(points)
         
         _guess = 4.5 #kernel length guess
