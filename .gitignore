@@ -1,3 +1,7 @@
+# test chains and pickle files
+*FORSAMPLER
+*.p
+
 # png and pdf files
 *.png
 *.pdf
