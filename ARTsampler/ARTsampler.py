@@ -8,25 +8,43 @@ from scipy.optimize import minimize
 
 class ARTsampler(object):
     #This constructor will be removed later
-    def __init__(self, prior_volume, lnprob, lnprob_args,
+    def __init__(self, prior_distributions, lnprob, lnprob_args,
                  Ntraining_points=40, scale=8, Nwalkers=32, max_iter=2,
                  Nburn=100, Nsteps=1000, quiet=True):
         #Enfore dimensionality
-        prior_volume = np.asarray(prior_volume)
-        priov_volume = np.atleast_2d(prior_volume)
-        assert prior_volume.ndim == 2 #array of min and maxes
-        assert len(prior_volume[0]) == 2 #only a min and a max
-
+        #prior_volume = np.asarray(prior_volume)
+        #priov_volume = np.atleast_2d(prior_volume)
+        #assert prior_volume.ndim == 2 #array of min and maxes
+        #assert len(prior_volume[0]) == 2 #only a min and a max
         
-        self.prior_volume = prior_volume
+        self.prior_distributions = prior_distributions
+        self.ndim = len(prior_distributions)
         self.iteration = 0 #Haven't done anything yet
-        training_points = self._make_initial_training_points(prior_volume, Ntraining_points)
         
         self.lnprob = lnprob
         self.lnprob_args = lnprob_args
 
+        initial = np.zeros(self.ndim)
+        for i in range(self.ndim):
+            initial[i] = self.prior_distributions[i].mean()
+        def nlp(params):
+            return -self.lnprob(params, self.lnprob_args)
+        if not quiet:
+            print("Maximizing True lnprob:")
+        result = minimize(nlp, initial, method="Nelder-Mead", tol=0.01)
+        if not quiet:
+            print(result)
+        training_points = self._make_initial_training_points(prior_distributions, result.x,
+                                                             Ntraining_points)
+        #training_points = self._make_training_points(0, result.x,
+        #                                             result2.hess_inv,
+        #                                             Ntraining_points,
+        #                                             scale)
+        training_points = np.append(training_points, np.atleast_2d(result.x), axis=0)
+
         #Set quantities that have been computed so far
-        self.training_points = [training_points]
+        self._training_points = [training_points] #No prior clipping
+        self.training_points = [training_points] #Prior clipping
 
         #Initialize lists
         self.mean_guesses = []
@@ -45,35 +63,52 @@ class ARTsampler(object):
         self.quiet = quiet
 
     def single_iteration(self):
-        i = self.iteration
+        iteration = self.iteration
+        
+        if iteration > self.max_iter:
+            print("Iteration {0} reached, max_iter is {1}.".format(iteration, self.max_iter))
+            return False
 
         if not self.quiet:
-            print("Performing iteration {0}".format(i))
+            print("Performing iteration {0}".format(iteration))
         
-        if i > 0:
+        if iteration > 0:
             chain = self.get_samples()
             mean_guess = np.mean(chain, 0)
             cov_guess = np.cov(chain.T)
-            training_points = self._make_training_points(i, mean_guess,
-                                                         cov_guess,
-                                                         self.Ntraining_points,
-                                                         self.scale)
+            _training_points = self._make_training_points(iteration, mean_guess,
+                                                          cov_guess,
+                                                          self.Ntraining_points,
+                                                          self.scale)
             self.mean_guesses.append(mean_guess)
             self.covariance_guesses.append(cov_guess)
-            self.training_points.append(training_points)
-        else:
-            self.mean_guesses.append(np.mean(self.training_points[i], 0))
-            self.covariance_guesses.append(np.diag(np.var(self.training_points[i], 0)))
-        
-        mean_guess = self.mean_guesses[i]
-        cov_guess = self.covariance_guesses[i]
-        points = self.training_points[i]
+            self._training_points.append(_training_points)
+
+            #Clip points off that are outside of priors (i.e. have lnprob of -np.inf)
+            _points = self._training_points[iteration]
+            flags = []
+            lnpriors = np.zeros(len(_points))
+            for i in range(len(_points)):
+                for j in range(self.ndim):
+                    lnpriors[i] += self.prior_distributions[j].logpdf(_points[i, j])
+                if np.isinf(lnpriors[i]) or np.isnan(lnpriors[i]):
+                    flags.append(False)
+                else:
+                    flags.append(True)
+            points = _points[flags]
+            self.training_points.append(points)
             
-        if i > self.max_iter:
-            print("Iteration {0} reached, max_iter is {1}.".format(i, self.max_iter))
-            return False
+        else:
+            self.mean_guesses.append(np.mean(self._training_points[0], 0))
+            self.covariance_guesses.append(np.diag(np.var(self._training_points[0], 0)))
+        
+        mean_guess = self.mean_guesses[iteration]
+        cov_guess = self.covariance_guesses[iteration]
+        points = self.training_points[iteration]
+            
         if not self.quiet:
             print("Computing log-probability of training points.")
+
         lnlikes = np.array([self.lnprob(p, self.lnprob_args) for p in points]).flatten()
 
         #Make the current stage
@@ -82,20 +117,29 @@ class ARTsampler(object):
         stage = ARTstage(mean_guess, cov_guess, points, lnlikes, self.quiet)
         
         #Perform MCMC
-        initial = mean_guess
+        def lnprob(params):
+            lnprior = 0
+            for i in range(self.ndim):
+                lnprior += self.prior_distributions[i].logpdf(params[i])
+            if np.isinf(lnprior):
+                return -1e99
+            return stage.predict(params)# + lnprior
+
+        #Initial should always be the peak of the lnprob, since we maximized earlier
+        initial = points[np.argmax(lnlikes)]
         ndim = len(initial)
         nwalkers = self.Nwalkers
-        sampler = emcee.EnsembleSampler(nwalkers, ndim, stage.predict)
+        sampler = emcee.EnsembleSampler(nwalkers, ndim, lnprob)
         if not self.quiet:
             print("Running first burn-in")
-        p0 = np.random.multivariate_normal(mean_guess, cov_guess, size=nwalkers)
-        #p0 = initial + 1e-4*np.random.randn(nwalkers, ndim)
+        #p0 = np.random.multivariate_normal(mean_guess, cov_guess, size=nwalkers)
+        p0 = initial + 1e-4*np.random.randn(nwalkers, ndim)
         p0, lp, _ = sampler.run_mcmc(p0, self.Nburn)
         if not self.quiet:
             print("Running second burn-in")
-        p0 = np.random.multivariate_normal(p0[np.argmax(lp)],
-                                           cov_guess, size=nwalkers)
-        #p0 = p0[np.argmax(lp)] + 1e-4*np.random.randn(nwalkers, ndim)
+        #p0 = np.random.multivariate_normal(p0[np.argmax(lp)],
+        #                                   cov_guess, size=nwalkers)
+        p0 = p0[np.argmax(lp)] + 1e-4*np.random.randn(nwalkers, ndim)
         p0, lp, _ = sampler.run_mcmc(p0, self.Nburn)
         sampler.reset()
         if not self.quiet:
@@ -115,15 +159,14 @@ class ARTsampler(object):
     def get_training_points(self, index=-1):
         return self.training_points[index]
 
-    def _make_initial_training_points(self, prior_volume, Ntraining_points=100):
-        ndim = len(prior_volume)
-        x = pyDOE2.lhs(ndim, samples=Ntraining_points,
-                       criterion="center", iterations=5)
+    def _make_initial_training_points(self, prior_distributions, best_point, Ntraining_points=100):
+        ndim = len(prior_distributions)
+        x = np.zeros((Ntraining_points, ndim))
         for i in range(ndim):
-            pvi = prior_volume[i]
-            size = np.max(pvi) - np.min(pvi)
-            x[:, i] *= size
-            x[:, i] += np.min(pvi)
+            #print(prior_distributions[i].mean())
+            x[:, i] = best_point[i] + 0.1 * np.random.randn(Ntraining_points) * \
+                prior_distributions[i].std()
+            #x[:, i] = prior_distributions[i].rvs(size=Ntraining_points)
         return x
     
     def _make_training_points(self, iteration, mean, cov,
