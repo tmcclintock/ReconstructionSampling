@@ -150,13 +150,13 @@ class ARTsampler(object):
         if not self.quiet:
             print("Running first burn-in")
         #p0 = np.random.multivariate_normal(mean_guess, cov_guess, size=nwalkers)
-        p0 = initial + 1e-4*np.random.randn(nwalkers, ndim)
+        p0 = initial + 1e-2*np.random.randn(nwalkers, ndim)
         p0, lp, _ = sampler.run_mcmc(p0, self.Nburn)
         if not self.quiet:
             print("Running second burn-in")
         #p0 = np.random.multivariate_normal(p0[np.argmax(lp)],
         #                                   cov_guess, size=nwalkers)
-        p0 = p0[np.argmax(lp)] + 1e-4*np.random.randn(nwalkers, ndim)
+        p0 = p0[np.argmax(lp)] + 1e-2*np.random.randn(nwalkers, ndim)
         p0, lp, _ = sampler.run_mcmc(p0, self.Nburn)
         sampler.reset()
         if not self.quiet:
