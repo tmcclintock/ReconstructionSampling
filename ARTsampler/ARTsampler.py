@@ -7,7 +7,6 @@ from george import kernels, GP
 from scipy.optimize import minimize
 
 class ARTsampler(object):
-    #This constructor will be removed later
     def __init__(self, prior_distributions, lnprob, lnprob_args,
                  Ntraining_points=40, scale=8, Nwalkers=32, max_iter=2,
                  Nburn=100, Nsteps=1000, quiet=True):
@@ -32,6 +31,7 @@ class ARTsampler(object):
         if not quiet:
             print("Maximizing True lnprob:")
         result = minimize(nlp, initial, method="Nelder-Mead", tol=0.01)
+        self.peak = result.x
         if not quiet:
             print(result)
         training_points = self._make_initial_training_points(prior_distributions, result.x,
@@ -40,7 +40,7 @@ class ARTsampler(object):
         #                                             result2.hess_inv,
         #                                             Ntraining_points,
         #                                             scale)
-        training_points = np.append(training_points, np.atleast_2d(result.x), axis=0)
+        training_points = np.append(training_points, np.atleast_2d(self.peak), axis=0)
 
         #Set quantities that have been computed so far
         self._training_points = [training_points] #No prior clipping
@@ -80,6 +80,10 @@ class ARTsampler(object):
                                                           cov_guess,
                                                           self.Ntraining_points,
                                                           self.scale)
+            #Append on the peak point
+            _training_points = np.append(_training_points,
+                                         np.atleast_2d(self.peak), axis=0)
+
             self.mean_guesses.append(mean_guess)
             self.covariance_guesses.append(cov_guess)
             self._training_points.append(_training_points)
@@ -154,6 +158,14 @@ class ARTsampler(object):
         return True
 
     def get_samples(self, index=-1):
+        sampler = self._emcee_samplers[index]
+        lnprob = sampler.flatlnprobability
+        chain = self.chains[index]
+        peak = np.max(lnprob)
+        inds = (peak - lnprob) < 2*self.ndim #better than 5*chi^2 points
+        return chain[inds]
+
+    def get_chain(self, index=-1):
         return self.chains[index]
 
     def get_training_points(self, index=-1):
@@ -230,11 +242,14 @@ class ARTstage(object):
         xR /= rotated_stds
         return xR
 
-    def predict(self, x):
+    def predict(self, x, with_var=False):
         #Make it the correct format
         x2d = np.atleast_2d(x).copy()
         
         #Get x into the eigenbasis and predict
         pred, pred_var = self.gp.predict(self.lnlikes,
                                          self._transform_data(x2d))
-        return pred + self.lnlike_max 
+        if with_var:
+            return pred + self.lnlike_max, pred_var
+        else:
+            return pred + self.lnlike_max 
