@@ -34,13 +34,13 @@ class ARTsampler(object):
         self.peak = result.x
         if not quiet:
             print(result)
-        training_points = self._make_initial_training_points(prior_distributions, result.x,
+        training_points = self._make_initial_training_points(prior_distributions, self.peak,
                                                              Ntraining_points)
         #training_points = self._make_training_points(0, result.x,
         #                                             result2.hess_inv,
         #                                             Ntraining_points,
         #                                             scale)
-        training_points = np.append(training_points, np.atleast_2d(self.peak), axis=0)
+        #training_points = np.append(training_points, np.atleast_2d(self.peak), axis=0)
 
         #Set quantities that have been computed so far
         self._training_points = [training_points] #No prior clipping
@@ -73,12 +73,12 @@ class ARTsampler(object):
             print("Performing iteration {0}".format(iteration))
         
         if iteration > 0:
-            chain = self.get_samples()
+            chain = self.get_chain()
             mean_guess = np.mean(chain, 0)
             cov_guess = np.cov(chain.T)
             _training_points = self._make_training_points(iteration, mean_guess,
                                                           cov_guess,
-                                                          self.Ntraining_points,
+                                                          self.Ntraining_points-1,
                                                           self.scale)
             #Append on the peak point
             _training_points = np.append(_training_points,
@@ -119,7 +119,8 @@ class ARTsampler(object):
         if not self.quiet:
             print("Reconstructing the distribution")
         stage = ARTstage(mean_guess, cov_guess, points, lnlikes, self.quiet)
-        
+        self.stages.append(stage)
+
         #Perform MCMC
         def lnprob(params):
             lnprior = 0
@@ -127,8 +128,20 @@ class ARTsampler(object):
                 lnprior += self.prior_distributions[i].logpdf(params[i])
             if np.isinf(lnprior):
                 return -1e99
-            return stage.predict(params)# + lnprior
-
+            """
+            lnlike = 0
+            weights_sum = 0
+            pred = 0
+            for stage in self.stages:
+                pll, pll_var = stage.predict(params, True)
+                w = 1./pll_var
+                pred += pll * w
+                weights_sum += w
+            return pred/weights_sum
+            """
+            return self.stages[-1].predict(params)# + lnprior
+            
+            
         #Initial should always be the peak of the lnprob, since we maximized earlier
         initial = points[np.argmax(lnlikes)]
         ndim = len(initial)
@@ -150,7 +163,6 @@ class ARTsampler(object):
             print("Running production...")
         sampler.run_mcmc(p0, self.Nsteps)
 
-        self.stages.append(stage)
         self._emcee_samplers.append(sampler)
         self.chains.append(sampler.flatchain)
         
@@ -171,14 +183,14 @@ class ARTsampler(object):
     def get_training_points(self, index=-1):
         return self.training_points[index]
 
-    def _make_initial_training_points(self, prior_distributions, best_point, Ntraining_points=100):
+    def _make_initial_training_points(self, prior_distributions, best_point,
+                                      Ntraining_points=100):
         ndim = len(prior_distributions)
         x = np.zeros((Ntraining_points, ndim))
+        x[0] = best_point
         for i in range(ndim):
-            #print(prior_distributions[i].mean())
-            x[:, i] = best_point[i] + 0.1 * np.random.randn(Ntraining_points) * \
+            x[1:, i] = best_point[i] + 0.1 * np.random.randn(Ntraining_points-1) * \
                 prior_distributions[i].std()
-            #x[:, i] = prior_distributions[i].rvs(size=Ntraining_points)
         return x
     
     def _make_training_points(self, iteration, mean, cov,
