@@ -9,16 +9,10 @@ from scipy.optimize import minimize
 class ARTsampler(object):
     def __init__(self, prior_distributions, lnprob, lnprob_args,
                  Ntraining_points=40, scale=8, Nwalkers=32, max_iter=2,
-                 Nburn=100, Nsteps=1000, quiet=True):
-        #Enfore dimensionality
-        #prior_volume = np.asarray(prior_volume)
-        #priov_volume = np.atleast_2d(prior_volume)
-        #assert prior_volume.ndim == 2 #array of min and maxes
-        #assert len(prior_volume[0]) == 2 #only a min and a max
-        
+                 Nburn=100, Nsteps=1000, quiet=True):        
         self.prior_distributions = prior_distributions
         self.ndim = len(prior_distributions)
-        self.iteration = 0 #Haven't done anything yet
+        self.iteration = 0
         
         self.lnprob = lnprob
         self.lnprob_args = lnprob_args
@@ -32,15 +26,13 @@ class ARTsampler(object):
             print("Maximizing True lnprob:")
         result = minimize(nlp, initial, method="Nelder-Mead", tol=0.01)
         self.peak = result.x
-        if not quiet:
-            print(result)
-        training_points = self._make_initial_training_points(prior_distributions, self.peak,
+        #if not quiet:
+        #    print(result)
+
+        
+        training_points=self._make_initial_training_points(prior_distributions,
+                                                             self.peak,
                                                              Ntraining_points)
-        #training_points = self._make_training_points(0, result.x,
-        #                                             result2.hess_inv,
-        #                                             Ntraining_points,
-        #                                             scale)
-        #training_points = np.append(training_points, np.atleast_2d(self.peak), axis=0)
 
         #Set quantities that have been computed so far
         self._training_points = [training_points] #No prior clipping
@@ -103,6 +95,7 @@ class ARTsampler(object):
             self.training_points.append(points)
             
         else:
+            #self.mean_guesses.append(self.peak)
             self.mean_guesses.append(np.mean(self._training_points[0], 0))
             self.covariance_guesses.append(np.diag(np.var(self._training_points[0], 0)))
         
@@ -149,14 +142,36 @@ class ARTsampler(object):
         sampler = emcee.EnsembleSampler(nwalkers, ndim, lnprob)
         if not self.quiet:
             print("Running first burn-in")
-        #p0 = np.random.multivariate_normal(mean_guess, cov_guess, size=nwalkers)
-        p0 = initial + 1e-2*np.random.randn(nwalkers, ndim)
+        p0 = np.random.multivariate_normal(mean_guess,
+                                           cov_guess, size=nwalkers)
+        #p0 = initial + 1e-2*np.random.randn(nwalkers, ndim)
+        #p0 = np.random.randn(nwalkers, ndim) *np.sqrt(cov_guess.diagonal())
+        #p0[:] += initial
+        
         p0, lp, _ = sampler.run_mcmc(p0, self.Nburn)
+        best = p0[np.argmax(lp)]
         if not self.quiet:
             print("Running second burn-in")
-        #p0 = np.random.multivariate_normal(p0[np.argmax(lp)],
-        #                                   cov_guess, size=nwalkers)
-        p0 = p0[np.argmax(lp)] + 1e-2*np.random.randn(nwalkers, ndim)
+        p0 = np.random.multivariate_normal(best,
+                                           cov_guess, size=nwalkers)
+        #p0 = p0[np.argmax(lp)] + 1e-2*np.random.randn(nwalkers, ndim)
+        #p0 = np.random.randn(nwalkers, ndim)*np.sqrt(cov_guess.diagonal())
+        #p0[:] += best
+
+        import matplotlib.pyplot as plt
+        c = sampler.flatchain
+        plt.scatter(c[:,0], c[:,1], c='r', s=1, zorder=-1)
+        plt.scatter(points[:,0], points[:,1], c='k', s=10, zorder=1)
+        plt.scatter(p0[:,0], p0[:,1], c='b', s=1, zorder=0)
+        plt.scatter(best[0], best[1], c="g", s=20, marker="*")
+        plt.scatter(self.peak[0], self.peak[1], c='yellow', marker='*', s=20)
+        print(lnprob(best))
+        print(lnprob(self.peak))
+        print(np.max(lnlikes))
+        plt.show()
+        exit()
+
+
         p0, lp, _ = sampler.run_mcmc(p0, self.Nburn)
         sampler.reset()
         if not self.quiet:
@@ -189,7 +204,7 @@ class ARTsampler(object):
         x = np.zeros((Ntraining_points, ndim))
         x[0] = best_point
         for i in range(ndim):
-            x[1:, i] = best_point[i] + 0.1 * np.random.randn(Ntraining_points-1) * \
+            x[1:, i] = best_point[i] + 0.01 * np.random.randn(Ntraining_points-1) * \
                 prior_distributions[i].std()
         return x
     
@@ -212,15 +227,24 @@ class ARTstage(object):
     def __init__(self, mean, covariance, points, lnlikes, quiet=True):
         self.mean = mean
         self.cov = covariance
-        self.points = points
-        self.lnlikes_true = lnlikes
-        self.lnlike_max = np.max(lnlikes)
-        self.lnlikes = lnlikes - self.lnlike_max #max is now at 0
-        self.x = self._transform_data(points)
+
+        #Let's try only interpolating over points that are
+        #better than, say, 10-ish sigma
+        dof = len(self.mean)
+        inds = np.fabs(np.max(lnlikes) - lnlikes) < 100*dof
+        print(inds)
+        print(lnlikes)
+        
+        self.points = points[inds]
+        self.lnlikes_true = lnlikes[inds]
+        self.lnlike_max = np.max(lnlikes[inds])
+        self.lnlikes = lnlikes[inds] - self.lnlike_max #max is now at 0
+        self.x = self._transform_data(self.points)
+
+        print(max(self.lnlikes), min(self.lnlikes))
         
         _guess = 4.5 #kernel length guess
-        ndim = len(points[0])
-        kernel = kernels.ExpSquaredKernel(metric=_guess, ndim=ndim)
+        kernel = kernels.ExpSquaredKernel(metric=_guess, ndim=dof)
         lnPmin = np.min(self.lnlikes)
         gp = GP(kernel, mean=lnPmin-np.fabs(lnPmin*3))
         
@@ -265,3 +289,34 @@ class ARTstage(object):
             return pred + self.lnlike_max, pred_var
         else:
             return pred + self.lnlike_max 
+
+if __name__ == "__main__":
+    import numpy as np
+    import scipy.stats as sss
+    true_means = np.array([1., 1., 1.])
+    #true_means = np.array([80, -28, -34])
+    standard_deviations = np.array([10.0, 1., 0.1])
+    eig = standard_deviations**2/np.sum(standard_deviations**2) * \
+        len(true_means)
+    Corr = sss.random_correlation.rvs(eig)
+    true_cov = np.dot(np.diag(standard_deviations),
+                      np.dot(Corr, np.diag(standard_deviations)))
+
+    loglike_args = {"true_mean": true_means, "true_covariance": true_cov}
+
+    def true_log_likelihood(params, args):
+        mu = args["true_mean"]
+        C = args["true_covariance"]
+        D = mu - params
+        return -0.5 * np.dot(D, np.linalg.solve(C, D))
+
+    prior_distributions = [sss.uniform(loc=true_means[0]-75, scale=150), 
+                           sss.uniform(loc=true_means[1]-75, scale=150),
+                           sss.uniform(loc=true_means[2]-75, scale=150)]
+
+    sampler = ARTsampler(prior_distributions, true_log_likelihood, 
+                         loglike_args, quiet=False, 
+                         Ntraining_points=100, Nburn = 1000,
+                         Nsteps=1000, max_iter=1)
+
+    sampler.single_iteration()
