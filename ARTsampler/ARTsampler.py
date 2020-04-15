@@ -95,6 +95,8 @@ class ARTsampler(object):
         #Evaluate the posterior at all samples
         lnPs = np.array([self.lnprob(gi, *self.lnprob_args) for gi in g])
 
+        #TODO check for infs
+
         #Save the samples
         if self.g is None: #first update
             assert self.lnPs == None
@@ -120,7 +122,12 @@ class ARTsampler(object):
             L = fill_lower_diag(arr)
             cov = np.dot(L, L.T)
             lnG = ss.multivariate_normal.logpdf(x, mean=mu, cov=cov)
-            return np.exp(lnG)*(lnG - lnP + A)
+            #return np.sum(np.exp(lnG)*(lnG - lnP + A)) #KL divergence
+            l2 = (lnP - A - lnG)**2 #least squares
+            #print(l2)
+            #print(lnG)
+            #print(lnP)
+            return l2
         #Create the initial guess
         mean = np.hstack(([9.5], self.G.mean))
         L = np.linalg.cholesky(self.G.cov)
